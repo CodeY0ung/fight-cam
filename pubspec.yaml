@@ -61,6 +61,9 @@ dependencies:
   # WakeLock (화면 꺼져도 CPU 유지)
   wakelock_plus: ^1.2.0
 
+  # URL Launcher
+  url_launcher: ^6.2.5
+
   # Core Dependencies
   provider: ^6.1.2
 

@@ -13,6 +13,21 @@ class ManualRendererService {
   Function(double progress, String status)? onProgress;
   bool _isCancelled = false;
 
+  /// 워터마크 활성화 여부 (향후 유료 결제 시 false로 전환 가능)
+  /// 현재는 항상 true로 고정
+  bool _isWatermarkEnabled = true;
+
+  /// 워터마크 활성화 상태 확인
+  bool get isWatermarkEnabled => _isWatermarkEnabled;
+
+  /// 워터마크 활성화/비활성화 (향후 결제 연동용)
+  /// 현재 버전에서는 내부적으로 항상 true로 강제됨
+  void setWatermarkEnabled(bool enabled) {
+    // TODO: 유료 결제 검증 로직 추가 후 아래 라인 활성화
+    // _isWatermarkEnabled = enabled;
+    _isWatermarkEnabled = true; // 현재 버전: 항상 강제 적용
+  }
+
   void cancel() { _isCancelled = true; FFmpegKit.cancel(); }
   void reset() => _isCancelled = false;
 
@@ -45,7 +60,7 @@ class ManualRendererService {
     final commandFilePath = await _generateCropCommandFile(boxes);
 
     onProgress?.call(0.5, '고화질 마스터링 및 인코딩 시작...');
-    // 3단계: 디노이즈 -> 크롭 -> 업스케일 -> 샤프닝 연쇄 필터 적용
+    // 3단계: 디노이즈 -> 크롭 -> 업스케일 -> 샤프닝 -> 워터마크 연쇄 필터 적용
     final outputPath = await _executeFFmpeg(
       videoPath: videoPath,
       commandFilePath: commandFilePath,
@@ -131,6 +146,45 @@ class ManualRendererService {
     return path;
   }
 
+  /// 플랫폼별 시스템 폰트 경로 반환
+  String _getSystemFontPath() {
+    if (Platform.isIOS) {
+      return '/System/Library/Fonts/Helvetica.ttc';
+    } else {
+      return '/system/fonts/Roboto-Regular.ttf';
+    }
+  }
+
+  /// drawtext 필터 문자열 생성
+  /// 우측 하단에 fight-cam / just sparring 2줄 상시 표시
+  String _buildWatermarkFilter({
+    required int outH,
+  }) {
+    if (!_isWatermarkEnabled) return '';
+
+    final fontPath = _getSystemFontPath();
+    final int fontSize = (outH * 0.020).round().clamp(14, 32);
+    final int lineGap = (fontSize * 1.4).round();
+
+    // 1행: 'fight-cam' (우측 하단, 위쪽 줄)
+    final String line1 =
+        "drawtext=text='fight-cam'"
+        ":fontfile='$fontPath'"
+        ':fontsize=$fontSize'
+        ':fontcolor=white@0.4'
+        ':x=w-tw-20:y=h-$lineGap-20';
+
+    // 2행: 'just sparring' (우측 하단, 아래쪽 줄)
+    final String line2 =
+        "drawtext=text='just sparring'"
+        ":fontfile='$fontPath'"
+        ':fontsize=$fontSize'
+        ':fontcolor=white@0.4'
+        ':x=w-tw-20:y=h-th-20';
+
+    return ',$line1,$line2';
+  }
+
   Future<String> _executeFFmpeg({
     required String videoPath,
     required String commandFilePath,
@@ -142,7 +196,7 @@ class ManualRendererService {
     final outputPath = '${tempDir.path}/manual_mastered_${DateTime.now().millisecondsSinceEpoch}.mp4';
 
     // 업스케일링 목표 해상도: FHD(1080p)
-    const int targetH = 1080; 
+    const int targetH = 1080;
     int outW, outH;
     switch (aspectRatio) {
       case TargetAspectRatio.vertical_9_16: outW = (targetH * 9/16).round(); outH = targetH; break;
@@ -152,23 +206,45 @@ class ManualRendererService {
     }
     outW = (outW ~/ 2) * 2; outH = (outH ~/ 2) * 2;
 
+    // 워터마크 필터 (처리 완료된 고화질 화면 위에 최종 적용)
+    final String watermarkFilter = _buildWatermarkFilter(
+      outH: outH,
+    );
+
     // [마스터링 필터 체인 설명]
     // 1. hqdn3d: 업스케일 전 노이즈 제거 (화면 자글거림 방지)
     // 2. sendcmd+crop: 사용자 지정 궤적대로 크롭
     // 3. scale+lanczos: 고성능 알고리즘으로 화질 보존하며 확대
     // 4. unsharp: 확대 시 흐려진 윤곽선을 다시 뚜렷하게 보정
-    final String filterChain = 
+    // 5. drawtext: 워터마크 (영상 처리 완료 후 최종 단계에서 삽입)
+    final String filterChain =
         'hqdn3d=4:3:6:4.5,'
         'sendcmd=f=$commandFilePath,crop=w=iw:h=ih,'
         'scale=$outW:$outH:flags=lanczos,'
-        'unsharp=3:3:0.8:3:3:0.0,format=yuv420p';
+        'unsharp=3:3:0.8:3:3:0.0'
+        '$watermarkFilter,'
+        'format=yuv420p';
 
     final cmd = '-ss 0 -t ${(totalDurationMs / 1000).toStringAsFixed(3)} -i "$videoPath" '
         '-vf "$filterChain" '
         '-c:v libx264 -preset veryfast -crf 16 -tune film -r 30 -c:a copy -y "$outputPath"';
 
+    debugPrint('FFmpeg 명령어: $cmd');
+
     final session = await FFmpegKit.execute(cmd);
     if (!ReturnCode.isSuccess(await session.getReturnCode())) throw Exception('마스터링 인코딩 실패');
+
+    // 렌더링 speed 값 확인 (성능 모니터링)
+    final logs = await session.getLogs();
+    for (final log in logs.reversed) {
+      final msg = log.getMessage();
+      final match = RegExp(r'speed=\s*([\d.]+)x').firstMatch(msg);
+      if (match != null) {
+        debugPrint('[ManualRenderer] 렌더링 속도: ${match.group(1)}x realtime');
+        break;
+      }
+    }
+
     return outputPath;
   }
 }

@@ -65,6 +65,13 @@ flutter {
     source = "../.."
 }
 
+// Fix: androidx.annotation.experimental.R defined multiple times (D8 dex conflict)
+configurations.all {
+    resolutionStrategy {
+        force("androidx.annotation:annotation-experimental:1.4.0")
+    }
+}
+
 dependencies {
     // Core library desugaring for modern Java APIs on older Android versions
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")

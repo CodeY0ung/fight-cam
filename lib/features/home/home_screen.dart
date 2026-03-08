@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'dart:io';
-import '../editor/ai_tracking/selection_screen_v5.dart';
+import '../editor/ai_tracking/ai_target_selection_screen.dart';
 import '../editor/manual_director/manual_director_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -15,6 +16,50 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final ImagePicker _picker = ImagePicker();
   bool _isLoading = false;
+
+  /// 임시 구글 폼 제보 링크 (추후 실제 링크로 교체)
+  static const String _submissionFormUrl = 'https://forms.gle/PLACEHOLDER_FIGHT_CAM';
+
+  Future<void> _openSubmissionForm() async {
+    final uri = Uri.parse(_submissionFormUrl);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('링크를 열 수 없습니다.'),
+            backgroundColor: Color(0xFFFF3B3B),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _pickVideoForAiMode() async {
+    setState(() => _isLoading = true);
+    try {
+      final status = await _checkPermissions();
+      if (!status) {
+        if (mounted) _showPermissionDialog();
+        setState(() => _isLoading = false);
+        return;
+      }
+      final XFile? video = await _picker.pickVideo(source: ImageSource.gallery);
+      if (video != null && mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => AiTargetSelectionScreen(videoPath: video.path),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) _showErrorDialog('비디오를 불러오는 중 오류가 발생했습니다.');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
 
   Future<void> _pickVideoForManualMode() async {
     setState(() {
@@ -42,54 +87,6 @@ class _HomeScreenState extends State<HomeScreen> {
           context,
           MaterialPageRoute(
             builder: (context) => ManualDirectorScreen(videoPath: video.path),
-          ),
-        );
-      }
-    } catch (e) {
-      debugPrint('Error picking video: $e');
-      if (mounted) {
-        _showErrorDialog('비디오를 불러오는 중 오류가 발생했습니다.');
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _pickVideo() async {
-    setState(() {
-      _isLoading = true;
-    });
-
-    try {
-      // 권한 체크
-      final status = await _checkPermissions();
-      if (!status) {
-        if (mounted) {
-          _showPermissionDialog();
-        }
-        setState(() {
-          _isLoading = false;
-        });
-        return;
-      }
-
-      // 갤러리에서 비디오 선택
-      final XFile? video = await _picker.pickVideo(
-        source: ImageSource.gallery,
-      );
-
-      if (video != null && mounted) {
-        final file = File(video.path);
-
-        // V5.0 세그먼트 기반 선택 화면으로 이동
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => SelectionScreenV5(videoFile: file),
           ),
         );
       }
@@ -227,7 +224,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'AI 기반 격투기 하이라이트 메이커',
+                  '스파링 영상을 프로처럼 편집하세요',
                   style: TextStyle(
                     fontSize: 14,
                     color: Colors.white54,
@@ -236,9 +233,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 48),
 
-                // 메인 업로드 버튼
+                // 감독 트래킹 모드 버튼 (메인)
                 GestureDetector(
-                  onTap: _isLoading ? null : _pickVideo,
+                  onTap: _isLoading ? null : _pickVideoForManualMode,
                   child: Container(
                     width: double.infinity,
                     padding: const EdgeInsets.symmetric(vertical: 20),
@@ -271,18 +268,26 @@ class _HomeScreenState extends State<HomeScreen> {
                         : const Column(
                             children: [
                               Icon(
-                                Icons.video_library_rounded,
+                                Icons.videocam,
                                 size: 40,
                                 color: Colors.white,
                               ),
                               SizedBox(height: 12),
                               Text(
-                                '갤러리 영상 업로드해서 분석하기',
+                                '감독 트래킹 모드',
                                 style: TextStyle(
                                   fontSize: 18,
                                   fontWeight: FontWeight.bold,
                                   color: Colors.white,
                                   letterSpacing: 0.5,
+                                ),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                '조이스틱으로 직접 카메라를 조작하세요',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.white70,
                                 ),
                               ),
                             ],
@@ -291,9 +296,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                // 매뉴얼 디렉터 모드 버튼
+                // AI 자동 트래킹 모드 버튼
                 GestureDetector(
-                  onTap: _isLoading ? null : _pickVideoForManualMode,
+                  onTap: _isLoading ? null : _pickVideoForAiMode,
                   child: Container(
                     width: double.infinity,
                     padding: const EdgeInsets.symmetric(vertical: 16),
@@ -302,19 +307,19 @@ class _HomeScreenState extends State<HomeScreen> {
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(
                         color: const Color(0xFFFF3B3B).withValues(alpha: 0.5),
-                        width: 2,
+                        width: 1.5,
                       ),
                     ),
                     child: const Column(
                       children: [
                         Icon(
-                          Icons.videocam,
+                          Icons.smart_toy_outlined,
                           size: 32,
                           color: Color(0xFFFF3B3B),
                         ),
                         SizedBox(height: 8),
                         Text(
-                          '매뉴얼 디렉터 모드',
+                          'AI 자동 트래킹 모드',
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
@@ -323,10 +328,46 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         SizedBox(height: 4),
                         Text(
-                          '터치패드로 직접 카메라 조작',
+                          '타겟 한 번 설정 → 전체 궤적 자동 계산',
                           style: TextStyle(
                             fontSize: 12,
                             color: Colors.white54,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Just Sparring 제보하기 버튼 (소형)
+                GestureDetector(
+                  onTap: _openSubmissionForm,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Colors.orangeAccent.withValues(alpha: 0.4),
+                        width: 1,
+                      ),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.campaign,
+                          size: 18,
+                          color: Colors.orangeAccent,
+                        ),
+                        SizedBox(width: 8),
+                        Text(
+                          'Just Sparring 제보하기',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.orangeAccent,
                           ),
                         ),
                       ],
@@ -368,9 +409,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       SizedBox(height: 12),
                       Text(
-                        '1. 갤러리에서 격투기 스파링 영상을 선택하세요\n'
-                        '2. AI가 자동으로 동작을 분석합니다\n'
-                        '3. 멋진 하이라이트 영상을 받아보세요',
+                        '1. 갤러리에서 스파링 영상을 선택하세요\n'
+                        '2. 조이스틱과 줌으로 원하는 구도를 잡으세요\n'
+                        '3. 고화질 편집 영상이 자동 생성됩니다',
                         style: TextStyle(
                           fontSize: 14,
                           color: Colors.white60,
